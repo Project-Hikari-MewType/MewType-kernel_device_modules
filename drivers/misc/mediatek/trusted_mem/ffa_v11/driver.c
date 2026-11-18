@@ -110,7 +110,6 @@ struct ffa_drv_info {
 	struct work_struct sched_recv_irq_work;
 	bool info_get_64b;
 	struct xarray partition_info;
-	unsigned int partition_count;
 	DECLARE_HASHTABLE(notifier_hash, ilog2(FFA_MAX_NOTIFICATIONS));
 	struct mutex notify_lock; /* lock to protect notifier hashtable  */
 };
@@ -207,10 +206,11 @@ static int ffa_rxtx_unmap(u16 vm_id)
 		      .a0 = FFA_RXTX_UNMAP, .a1 = PACK_TARGET_INFO(vm_id, 0),
 		      }, &ret);
 
+	if (ret.a0 == FFA_SUCCESS)
+		return 0;
 	if (ret.a0 == FFA_ERROR)
-		return ffa_to_linux_errno((int)ret.a2);
-
-	return 0;
+		return ffa_to_linux_errno((int)ret.a2) ?: -EIO;
+	return -EIO;
 }
 
 #define PARTITION_INFO_GET_RETURN_COUNT_ONLY	BIT(0)
@@ -735,6 +735,8 @@ static void __do_sched_recv_cb(u16 part_id, u16 vcpu, bool is_per_vcpu)
 	void *cb_data;
 
 	partition = xa_load(&drv_info->partition_info, part_id);
+	if (!partition)
+		return;
 	read_lock(&partition->rw_lock);
 	callback = partition->callback;
 	cb_data = partition->cb_data;
@@ -917,6 +919,8 @@ static int ffa_sched_recv_cb_update(u16 part_id, ffa_sched_recv_cb callback,
 	bool cb_valid;
 
 	partition = xa_load(&drv_info->partition_info, part_id);
+	if (!partition)
+		return -ENOENT;
 	write_lock(&partition->rw_lock);
 
 	cb_valid = !!partition->callback;
@@ -1193,9 +1197,9 @@ void ffa_device_match_uuid(struct ffa_device *ffa_dev, const uuid_t *uuid)
 	kfree(pbuf);
 }
 
-static void ffa_setup_partitions(void)
+static int ffa_setup_partitions(void)
 {
-	int count, idx;
+	int count, idx, ret;
 	uuid_t uuid;
 	struct ffa_device *ffa_dev;
 	struct ffa_dev_part_info *info;
@@ -1204,10 +1208,9 @@ static void ffa_setup_partitions(void)
 	count = ffa_partition_probe(&uuid_null, &pbuf);
 	if (count <= 0) {
 		pr_info("%s: No partitions found, error %d\n", __func__, count);
-		return;
+		return count ?: -EINVAL;
 	}
 
-	xa_init(&drv_info->partition_info);
 	for (idx = 0, tpbuf = pbuf; idx < count; idx++, tpbuf++) {
 		import_uuid(&uuid, (u8 *)tpbuf->uuid);
 
@@ -1233,40 +1236,44 @@ static void ffa_setup_partitions(void)
 			ffa_device_unregister(ffa_dev);
 			continue;
 		}
-		xa_store(&drv_info->partition_info, tpbuf->id, info, GFP_KERNEL);
+		rwlock_init(&info->rw_lock);
+		ret = xa_insert(&drv_info->partition_info, tpbuf->id, info,
+				GFP_KERNEL);
+		if (ret) {
+			pr_err("%s: failed to save partition ID 0x%x - ret:%d\n",
+			       __func__, tpbuf->id, ret);
+			ffa_device_unregister(ffa_dev);
+			kfree(info);
+		}
 	}
-	drv_info->partition_count = count;
 
 	kfree(pbuf);
 
-	/* Allocate for the host */
+	/* The host may already be present in the firmware's partition list. */
+	if (xa_load(&drv_info->partition_info, drv_info->vm_id))
+		return 0;
+
 	info = kzalloc(sizeof(*info), GFP_KERNEL);
 	if (!info)
-		return;
-	xa_store(&drv_info->partition_info, drv_info->vm_id, info, GFP_KERNEL);
-	drv_info->partition_count++;
+		return -ENOMEM;
+	rwlock_init(&info->rw_lock);
+	ret = xa_insert(&drv_info->partition_info, drv_info->vm_id, info,
+			GFP_KERNEL);
+	if (ret)
+		kfree(info);
+
+	return ret;
 }
 
 static void ffa_partitions_cleanup(void)
 {
-	struct ffa_dev_part_info **info;
-	int idx, count = drv_info->partition_count;
+	struct ffa_dev_part_info *info;
+	unsigned long idx;
 
-	if (!count)
-		return;
-
-	info = kcalloc(count, sizeof(**info), GFP_KERNEL);
-	if (!info)
-		return;
-
-	xa_extract(&drv_info->partition_info, (void **)info, 0, VM_ID_MASK,
-		   count, XA_PRESENT);
-
-	for (idx = 0; idx < count; idx++)
-		kfree(info[idx]);
-	kfree(info);
-
-	drv_info->partition_count = 0;
+	xa_for_each(&drv_info->partition_info, idx, info) {
+		xa_erase(&drv_info->partition_info, idx);
+		kfree(info);
+	}
 	xa_destroy(&drv_info->partition_info);
 }
 
@@ -1511,8 +1518,33 @@ cleanup:
 	return ret;
 }
 
+static void ffa_teardown(bool rxtx_mapped)
+{
+	int ret = 0;
+
+	arm_ffa_bus_exit();
+	ffa_partitions_cleanup();
+
+	if (rxtx_mapped)
+		ret = ffa_rxtx_unmap(drv_info->vm_id);
+
+	if (ret) {
+		/* Firmware may still access these pages. */
+		pr_err("failed to unmap RX/TX buffers: %d; retaining pages\n",
+		       ret);
+	} else {
+		if (drv_info->tx_buffer)
+			free_pages_exact(drv_info->tx_buffer, RXTX_BUFFER_SIZE);
+		if (drv_info->rx_buffer)
+			free_pages_exact(drv_info->rx_buffer, RXTX_BUFFER_SIZE);
+	}
+
+	kfree(drv_info);
+}
+
 static int __init ffa_init(void)
 {
+	bool rxtx_mapped = false;
 	int ret;
 
 	ret = ffa_transport_init(&invoke_ffa_fn);
@@ -1525,30 +1557,31 @@ static int __init ffa_init(void)
 
 	drv_info = kzalloc(sizeof(*drv_info), GFP_KERNEL);
 	if (!drv_info) {
-		ret = -ENOMEM;
-		goto ffa_bus_exit;
+		arm_ffa_bus_exit();
+		return -ENOMEM;
 	}
+	xa_init(&drv_info->partition_info);
 
 	ret = ffa_version_check(&drv_info->version);
 	if (ret)
-		goto free_drv_info;
+		goto teardown;
 
 	if (ffa_id_get(&drv_info->vm_id)) {
 		pr_err("failed to obtain VM id for self\n");
 		ret = -ENODEV;
-		goto free_drv_info;
+		goto teardown;
 	}
 
 	drv_info->rx_buffer = alloc_pages_exact(RXTX_BUFFER_SIZE, GFP_KERNEL);
 	if (!drv_info->rx_buffer) {
 		ret = -ENOMEM;
-		goto free_pages;
+		goto teardown;
 	}
 
 	drv_info->tx_buffer = alloc_pages_exact(RXTX_BUFFER_SIZE, GFP_KERNEL);
 	if (!drv_info->tx_buffer) {
 		ret = -ENOMEM;
-		goto free_pages;
+		goto teardown;
 	}
 
 	ret = ffa_rxtx_map(virt_to_phys(drv_info->tx_buffer),
@@ -1556,47 +1589,37 @@ static int __init ffa_init(void)
 			   RXTX_BUFFER_SIZE / FFA_PAGE_SIZE);
 	if (ret) {
 		pr_err("failed to register FFA RxTx buffers\n");
-		goto free_pages;
+		goto teardown;
 	}
+	rxtx_mapped = true;
 
 	mutex_init(&drv_info->rx_lock);
 	mutex_init(&drv_info->tx_lock);
 
-	ffa_setup_partitions();
+	ret = ffa_setup_partitions();
+	if (ret) {
+		pr_err("failed to setup partitions: %d\n", ret);
+		goto teardown;
+	}
 
 	ffa_set_up_mem_ops_native_flag();
 
 	ret = ffa_notifications_setup();
 	if (ret)
-		goto partitions_cleanup;
+		goto teardown;
 
 	return 0;
-partitions_cleanup:
-	ffa_partitions_cleanup();
-free_pages:
-	if (drv_info->tx_buffer)
-		free_pages_exact(drv_info->tx_buffer, RXTX_BUFFER_SIZE);
-	free_pages_exact(drv_info->rx_buffer, RXTX_BUFFER_SIZE);
-free_drv_info:
-	kfree(drv_info);
-ffa_bus_exit:
-	arm_ffa_bus_exit();
 
-	/* ignore all error */
-	return 0;
+teardown:
+	ffa_teardown(rxtx_mapped);
+	return ret;
 }
 subsys_initcall(ffa_init);
 
 static void __exit ffa_exit(void)
 {
 	ffa_notifications_cleanup();
-	ffa_partitions_cleanup();
-	ffa_rxtx_unmap(drv_info->vm_id);
-	free_pages_exact(drv_info->tx_buffer, RXTX_BUFFER_SIZE);
-	free_pages_exact(drv_info->rx_buffer, RXTX_BUFFER_SIZE);
-	xa_destroy(&drv_info->partition_info);
-	kfree(drv_info);
-	arm_ffa_bus_exit();
+	ffa_teardown(true);
 }
 module_exit(ffa_exit);
 
