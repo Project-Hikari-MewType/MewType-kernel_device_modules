@@ -499,8 +499,15 @@ static int mtk_adda_ul_event(struct snd_soc_dapm_widget *w,
 			regmap_update_bits(afe->regmap, AFE_MTKAIF0_RX_CFG0,
 					   RG_MTKAIF0_RXIF_VOICE_MODE_MASK_SFT,
 					   0x0);
-			mtk_adda_ul_src_dmic(afe, MT6991_DAI_ADDA);
 		}
+		/* The board wires the handset mic to the SoC AP-DMIC pins and the
+		 * HAL keeps MTKAIF_DMIC off, so the guarded block above does not
+		 * program the uplink SRC. Configure it here at capture start so
+		 * UL0 is in DMIC mode instead of the analog AMIC default.
+		 */
+		mtk_adda_ul_src_dmic(afe, MT6991_DAI_ADDA);
+		dev_info(afe->dev, "dash: UL SRC configured for ADDA capture (mtkaif_dmic %d)\n",
+			 mtkaif_dmic);
 		mtk_final_dump(afe);
 		break;
 	case SND_SOC_DAPM_POST_PMD:
@@ -656,7 +663,7 @@ static int mtk_adda_ul_ap_dmic_event(struct snd_soc_dapm_widget *w,
 	struct snd_soc_component *cmpnt = snd_soc_dapm_to_component(w->dapm);
 	struct mtk_base_afe *afe = snd_soc_component_get_drvdata(cmpnt);
 
-	dev_info(afe->dev, "%s(), name %s, event 0x%x\n",
+	dev_info(afe->dev, "dash: %s(), name %s, event 0x%x\n",
 		 __func__, w->name, event);
 
 	switch (event) {
