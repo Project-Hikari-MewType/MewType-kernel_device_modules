@@ -81,6 +81,7 @@ VENDOR_MODULES = {
     "//kernel_device_modules-6.6:mgk_64_k66_modules.user/drivers/misc/xiaomi/debug_ext/debug_ext.ko": ["vendor_ramdisk"],
     "//kernel_device_modules-6.6:mgk_64_k66_modules.user/drivers/soc/mediatek/devapc/device-apc-common.ko": ["vendor_ramdisk"],
     "//kernel_device_modules-6.6:mgk_64_k66_modules.user/drivers/soc/mediatek/devapc/device-apc-mt6991.ko": ["vendor_ramdisk"],
+    "//kernel_device_modules-6.6:mgk_64_k66_modules.user/drivers/dma-buf/heaps/dio_dma_mapper.ko": ["vendor_dlkm"],
     "//kernel_device_modules-6.6:mgk_64_k66.user/drivers/gpu/drm/display/drm_display_helper.ko": ["vendor_ramdisk"],
     "//kernel_device_modules-6.6:mgk_64_k66.user/drivers/gpu/drm/drm_dma_helper.ko": ["vendor_ramdisk"],
     "//kernel_device_modules-6.6:mgk_64_k66_modules.user/drivers/misc/mediatek/lens/ois/dw9781c/dw9781c.ko": ["vendor_dlkm"],

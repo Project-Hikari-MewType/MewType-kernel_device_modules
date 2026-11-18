@@ -1230,6 +1230,7 @@ def get_overlay_modules_list():
         mgk_64_device_modules.append("drivers/power/supply/mtk_ut_test.ko")
         mgk_64_device_modules.append("drivers/leds/leds-color21024.ko")
         mgk_64_device_modules.append("sound/soc/codecs/frsm_i2cd/snd-soc-fs19xx.ko")
+        mgk_64_device_modules.append("drivers/dma-buf/heaps/dio_dma_mapper.ko")
         mgk_64_device_modules.append("drivers/misc/xiaomi/cam_intentaware_fsys/cam_fs.ko")
         mgk_64_device_modules.append("drivers/mihw/powersave/powersave.ko")
         mgk_64_device_modules.append("drivers/thermal/xiaomi/mi_thermal_interface.ko")
