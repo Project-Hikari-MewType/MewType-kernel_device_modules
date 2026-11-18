@@ -663,6 +663,14 @@ static int mtk_adda_ul_ap_dmic_event(struct snd_soc_dapm_widget *w,
 	case SND_SOC_DAPM_PRE_PMU:
 		mt6991_afe_gpio_request(afe, true, MT6991_DAI_ADDA, 1);
 		mt6991_afe_gpio_request(afe, true, MT6991_DAI_AP_DMIC, 1);
+		/* The HAL muxes ADDA_UL_Mux to AP_DMIC while leaving MTKAIF_DMIC
+		 * off, so mtk_adda_ul_event() skips the DMIC uplink SRC setup.
+		 * Configure the UL SRC here, where AP-DMIC is actually selected:
+		 * AP_DMIC_EN PRE_PMU runs before ADDA Capture Enable PRE_PMU.
+		 * MTKAIF_DMIC and the CH34/CH56 paths keep the HAL values, so
+		 * analog and NR captures are not switched to DMIC mode.
+		 */
+		mtk_adda_ul_src_dmic(afe, MT6991_DAI_ADDA);
 		break;
 	case SND_SOC_DAPM_POST_PMD:
 		/* should delayed 1/fs(smallest is 8k) = 125us before afe off */
