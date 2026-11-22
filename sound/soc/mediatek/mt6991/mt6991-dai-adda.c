@@ -20,7 +20,7 @@
  * a normal bugreport shows whether the HAL really muxed the capture to
  * AP-DMIC and which gain/mode the SRC is running with. No root needed.
  */
-static int mt6991_adda_dump = 1;
+static int mt6991_adda_dump;
 module_param_named(adda_ul_src_dump, mt6991_adda_dump, int, 0644);
 MODULE_PARM_DESC(adda_ul_src_dump,
 		 "Dump ADDA UL SRC registers around DMIC capture (0=off)");

@@ -47,6 +47,18 @@
 #include <sched.h>
 #include "vip.h"
 
+/*
+ * dash: opt-in VUL7 (modem uplink) level probe.
+ *
+ * Disabled by default so that a production build never prints per-second
+ * audio dumps. Enable at runtime with:
+ *   echo 1 > /sys/module/snd_soc_mt6991_afe/parameters/vul7_uplink_log
+ */
+static bool dash_vul7_log;
+module_param_named(vul7_uplink_log, dash_vul7_log, bool, 0644);
+MODULE_PARM_DESC(vul7_uplink_log,
+		 "Log the VUL7 modem uplink peak/avg once per second");
+
 #if IS_ENABLED(CONFIG_NEBULA_SND_PASSTHROUGH)
 #include <linux/nebula/hvcall.h>
 #include <linux/irq.h>
@@ -7006,8 +7018,8 @@ static irqreturn_t mt6991_afe_irq_handler(int irq_id, void *dev)
 				snd_pcm_period_elapsed(memif->substream);
 		}
 
-		/* dash: log the modem uplink (VUL7) level once per second */
-		if (i == MT6991_MEMIF_VUL7 && memif->dma_area &&
+		/* dash: opt-in VUL7 (modem uplink) level probe */
+		if (dash_vul7_log && i == MT6991_MEMIF_VUL7 && memif->dma_area &&
 		    memif->dma_bytes >= 4) {
 			static unsigned long vul7_next;
 			static unsigned int vul7_peak;
