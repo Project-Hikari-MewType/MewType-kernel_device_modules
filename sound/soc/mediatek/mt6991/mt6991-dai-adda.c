@@ -7,6 +7,7 @@
  */
 
 #include <linux/regmap.h>
+#include <linux/module.h>
 #include <linux/delay.h>
 #include "mt6991-afe-clk.h"
 #include "mt6991-afe-common.h"
@@ -14,6 +15,21 @@
 #include "mt6991-interconnection.h"
 
 #define MTKAIF4 //for  mt6338
+
+/* Optional A/B switch for the quiet-mic investigation.
+ *
+ * The stock (prebuilt) vendor_dlkm only programs the DMIC uplink SRC, which
+ * also carries the uplink gain (AFE_ADDA_UL0_SRC_CON1), when the HAL asks for
+ * MTKAIF_DMIC.  Keep that behaviour by default and allow forcing the block on
+ * the ADDA capture path without a rebuild:
+ *
+ *   echo 1 > /sys/module/snd_soc_mt6991_afe/parameters/force_ul_src_dmic
+ */
+static bool dash_force_ul_src_dmic;
+module_param_named(force_ul_src_dmic, dash_force_ul_src_dmic, bool, 0644);
+MODULE_PARM_DESC(force_ul_src_dmic,
+		 "Force DMIC uplink SRC setup on the ADDA capture path (0=off)");
+
 /* mt6363 vs1 voter */
 #define RG_BUCK_VS1_VOTER_EN_LO                 0x189a
 #define RG_BUCK_VS1_VOTER_EN_LO_SET             0x189b
@@ -499,15 +515,10 @@ static int mtk_adda_ul_event(struct snd_soc_dapm_widget *w,
 			regmap_update_bits(afe->regmap, AFE_MTKAIF0_RX_CFG0,
 					   RG_MTKAIF0_RXIF_VOICE_MODE_MASK_SFT,
 					   0x0);
+			mtk_adda_ul_src_dmic(afe, MT6991_DAI_ADDA);
 		}
-		/* The board wires the handset mic to the SoC AP-DMIC pins and the
-		 * HAL keeps MTKAIF_DMIC off, so the guarded block above does not
-		 * program the uplink SRC. Configure it here at capture start so
-		 * UL0 is in DMIC mode instead of the analog AMIC default.
-		 */
-		mtk_adda_ul_src_dmic(afe, MT6991_DAI_ADDA);
-		dev_info(afe->dev, "dash: UL SRC configured for ADDA capture (mtkaif_dmic %d)\n",
-			 mtkaif_dmic);
+		if (dash_force_ul_src_dmic)
+			mtk_adda_ul_src_dmic(afe, MT6991_DAI_ADDA);
 		mtk_final_dump(afe);
 		break;
 	case SND_SOC_DAPM_POST_PMD:
@@ -670,14 +681,6 @@ static int mtk_adda_ul_ap_dmic_event(struct snd_soc_dapm_widget *w,
 	case SND_SOC_DAPM_PRE_PMU:
 		mt6991_afe_gpio_request(afe, true, MT6991_DAI_ADDA, 1);
 		mt6991_afe_gpio_request(afe, true, MT6991_DAI_AP_DMIC, 1);
-		/* The HAL muxes ADDA_UL_Mux to AP_DMIC while leaving MTKAIF_DMIC
-		 * off, so mtk_adda_ul_event() skips the DMIC uplink SRC setup.
-		 * Configure the UL SRC here, where AP-DMIC is actually selected:
-		 * AP_DMIC_EN PRE_PMU runs before ADDA Capture Enable PRE_PMU.
-		 * MTKAIF_DMIC and the CH34/CH56 paths keep the HAL values, so
-		 * analog and NR captures are not switched to DMIC mode.
-		 */
-		mtk_adda_ul_src_dmic(afe, MT6991_DAI_ADDA);
 		break;
 	case SND_SOC_DAPM_POST_PMD:
 		/* should delayed 1/fs(smallest is 8k) = 125us before afe off */
